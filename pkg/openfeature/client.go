@@ -582,11 +582,18 @@ func (c *Client) evaluate(
 	globalHooks := api.hks
 	globalCtx := api.evalCtx
 	api.RUnlock()
+	if evalCtx.ctx == nil {
+		evalCtx = evalCtx.WithContext(ctx)
+	}
 
 	evalCtx = mergeContexts(evalCtx, c.evaluationContext, globalCtx)                                                           // API (global) -> client -> invocation
 	apiClientInvocationProviderHooks := append(append(append(globalHooks, c.hooks...), options.hooks...), provider.Hooks()...) // API, Client, Invocation, Provider
 	providerInvocationClientApiHooks := append(append(append(provider.Hooks(), options.hooks...), c.hooks...), globalHooks...) // Provider, Invocation, Client, API
 
+	// avoid nil context
+	if evalCtx.ctx == nil {
+		evalCtx.ctx = context.Background()
+	}
 	var err error
 	hookCtx := HookContext{
 		flagKey:           flag,
@@ -597,9 +604,9 @@ func (c *Client) evaluate(
 		evaluationContext: evalCtx,
 	}
 
-	defer func() {
-		c.finallyHooks(hookCtx, providerInvocationClientApiHooks, options)
-	}()
+	defer func(h *HookContext) { // close over the address, to get the latest data
+		c.finallyHooks(*h, providerInvocationClientApiHooks, options)
+	}(&hookCtx)
 
 	evalCtx, err = c.beforeHooks(hookCtx, apiClientInvocationProviderHooks, evalCtx, options)
 	hookCtx.evaluationContext = evalCtx
@@ -609,7 +616,7 @@ func (c *Client) evaluate(
 			"evaluationContext", evalCtx, "evaluationOptions", options, "type", flagType.String(),
 		)
 		err = fmt.Errorf("before hook: %w", err)
-		c.errorHooks(hookCtx, providerInvocationClientApiHooks, err, options)
+		hookCtx = c.errorHooks(hookCtx, providerInvocationClientApiHooks, err, options)
 		return evalDetails, err
 	}
 
@@ -648,7 +655,7 @@ func (c *Client) evaluate(
 			"errMessage", resolution.ResolutionError.message,
 		)
 		err = fmt.Errorf("error code: %w", err)
-		c.errorHooks(hookCtx, providerInvocationClientApiHooks, err, options)
+		hookCtx = c.errorHooks(hookCtx, providerInvocationClientApiHooks, err, options)
 		evalDetails.ResolutionDetail = resolution.ResolutionDetail()
 		evalDetails.Reason = ErrorReason
 		return evalDetails, err
@@ -656,7 +663,8 @@ func (c *Client) evaluate(
 	evalDetails.Value = resolution.Value
 	evalDetails.ResolutionDetail = resolution.ResolutionDetail()
 
-	if err := c.afterHooks(hookCtx, providerInvocationClientApiHooks, evalDetails, options); err != nil {
+	hookCtx, err = c.afterHooks(hookCtx, providerInvocationClientApiHooks, evalDetails, options)
+	if err != nil {
 		c.logger().Error(
 			err, "after hook", "flag", flag, "defaultValue", defaultValue,
 			"evaluationContext", evalCtx, "evaluationOptions", options, "type", flagType.String(),
@@ -702,26 +710,30 @@ func (c *Client) beforeHooks(
 
 func (c *Client) afterHooks(
 	hookCtx HookContext, hooks []Hook, evalDetails InterfaceEvaluationDetails, options EvaluationOptions,
-) error {
+) (HookContext, error) {
 	c.logger().V(debug).Info("executing after hooks")
 	defer c.logger().V(debug).Info("executed after hooks")
 
 	for _, hook := range hooks {
-		if err := hook.After(hookCtx, evalDetails, options.hookHints); err != nil {
-			return err
+		if ectx, err := hook.After(hookCtx, evalDetails, options.hookHints); err != nil {
+			return hookCtx, err
+		} else if ectx != nil {
+			hookCtx.evaluationContext = mergeContexts(*ectx, hookCtx.evaluationContext)
 		}
 	}
-
-	return nil
+	return hookCtx, nil
 }
 
-func (c *Client) errorHooks(hookCtx HookContext, hooks []Hook, err error, options EvaluationOptions) {
+func (c *Client) errorHooks(hookCtx HookContext, hooks []Hook, err error, options EvaluationOptions) HookContext {
 	c.logger().V(debug).Info("executing error hooks")
 	defer c.logger().V(debug).Info("executed error hooks")
 
 	for _, hook := range hooks {
-		hook.Error(hookCtx, err, options.hookHints)
+		if ectx := hook.Error(hookCtx, err, options.hookHints); ectx != nil {
+			hookCtx.evaluationContext = mergeContexts(*ectx, hookCtx.evaluationContext)
+		}
 	}
+	return hookCtx
 }
 
 func (c *Client) finallyHooks(hookCtx HookContext, hooks []Hook, options EvaluationOptions) {
@@ -729,7 +741,9 @@ func (c *Client) finallyHooks(hookCtx HookContext, hooks []Hook, options Evaluat
 	defer c.logger().V(debug).Info("executed finally hooks")
 
 	for _, hook := range hooks {
-		hook.Finally(hookCtx, options.hookHints)
+		if ectx := hook.Finally(hookCtx, options.hookHints); ectx != nil {
+			hookCtx.evaluationContext = mergeContexts(*ectx, hookCtx.evaluationContext)
+		}
 	}
 }
 
@@ -742,6 +756,7 @@ func mergeContexts(evaluationContexts ...EvaluationContext) EvaluationContext {
 
 	// create copy to prevent mutation of given EvaluationContext
 	mergedCtx := EvaluationContext{
+		ctx:          evaluationContexts[0].ctx,
 		attributes:   evaluationContexts[0].Attributes(),
 		targetingKey: evaluationContexts[0].targetingKey,
 	}
@@ -749,6 +764,9 @@ func mergeContexts(evaluationContexts ...EvaluationContext) EvaluationContext {
 	for i := 1; i < len(evaluationContexts); i++ {
 		if mergedCtx.targetingKey == "" && evaluationContexts[i].targetingKey != "" {
 			mergedCtx.targetingKey = evaluationContexts[i].targetingKey
+		}
+		if mergedCtx.ctx == nil && evaluationContexts[i].ctx != nil {
+			mergedCtx.ctx = evaluationContexts[i].ctx
 		}
 
 		for k, v := range evaluationContexts[i].attributes {

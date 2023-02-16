@@ -140,7 +140,6 @@ func TestRequirement_3_2_2(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-
 }
 
 func TestEvaluationContext_AttributesNotPassedByReference(t *testing.T) {

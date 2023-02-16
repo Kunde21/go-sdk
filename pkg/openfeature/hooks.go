@@ -1,13 +1,15 @@
 package openfeature
 
+import "context"
+
 // Hook allows application developers to add arbitrary behavior to the flag evaluation lifecycle.
 // They operate similarly to middleware in many web frameworks.
 // https://github.com/open-feature/spec/blob/main/specification/hooks.md
 type Hook interface {
 	Before(hookContext HookContext, hookHints HookHints) (*EvaluationContext, error)
-	After(hookContext HookContext, flagEvaluationDetails InterfaceEvaluationDetails, hookHints HookHints) error
-	Error(hookContext HookContext, err error, hookHints HookHints)
-	Finally(hookContext HookContext, hookHints HookHints)
+	After(hookContext HookContext, flagEvaluationDetails InterfaceEvaluationDetails, hookHints HookHints) (*EvaluationContext, error)
+	Error(hookContext HookContext, err error, hookHints HookHints) *EvaluationContext
+	Finally(hookContext HookContext, hookHints HookHints) *EvaluationContext
 }
 
 // HookHints contains a map of hints for hooks
@@ -66,6 +68,11 @@ func (h HookContext) EvaluationContext() EvaluationContext {
 	return h.evaluationContext
 }
 
+// Context returns the hook's go context.
+func (h HookContext) Context() context.Context {
+	return h.EvaluationContext().Context()
+}
+
 // NewHookContext constructs HookContext
 // Allows for simplified hook test cases while maintaining immutability
 func NewHookContext(
@@ -98,14 +105,10 @@ var _ Hook = UnimplementedHook{}
 //	}
 type UnimplementedHook struct{}
 
-func (u UnimplementedHook) Before(hookContext HookContext, hookHints HookHints) (*EvaluationContext, error) {
+func (UnimplementedHook) After(HookContext, InterfaceEvaluationDetails, HookHints) (*EvaluationContext, error) {
 	return nil, nil
 }
 
-func (u UnimplementedHook) After(hookContext HookContext, flagEvaluationDetails InterfaceEvaluationDetails, hookHints HookHints) error {
-	return nil
-}
-
-func (u UnimplementedHook) Error(hookContext HookContext, err error, hookHints HookHints) {}
-
-func (u UnimplementedHook) Finally(hookContext HookContext, hookHints HookHints) {}
+func (UnimplementedHook) Before(HookContext, HookHints) (*EvaluationContext, error) { return nil, nil }
+func (UnimplementedHook) Error(HookContext, error, HookHints) *EvaluationContext    { return nil }
+func (UnimplementedHook) Finally(HookContext, HookHints) *EvaluationContext         { return nil }

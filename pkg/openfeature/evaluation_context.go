@@ -1,10 +1,13 @@
 package openfeature
 
+import "context"
+
 // EvaluationContext provides ambient information for the purposes of flag evaluation
 // The use of the constructor, NewEvaluationContext, is enforced to set EvaluationContext's fields in order
 // to enforce immutability.
 // https://github.com/open-feature/spec/blob/main/specification/evaluation-context/evaluation-context.md
 type EvaluationContext struct {
+	ctx          context.Context
 	targetingKey string // uniquely identifying the subject (end-user, or client service) of a flag evaluation
 	attributes   map[string]interface{}
 }
@@ -30,6 +33,18 @@ func (e EvaluationContext) Attributes() map[string]interface{} {
 	return attrs
 }
 
+// Context returns the request context.
+func (e EvaluationContext) Context() context.Context {
+	return e.ctx
+}
+
+// WithContext returns a copy of the EvaluationContext with the provided context.
+func (e EvaluationContext) WithContext(ctx context.Context) EvaluationContext {
+	c := NewEvaluationContext(e.targetingKey, e.attributes)
+	c.ctx = ctx
+	return c
+}
+
 // NewEvaluationContext constructs an EvaluationContext
 //
 // targetingKey - uniquely identifying the subject (end-user, or client service) of a flag evaluation
@@ -41,8 +56,5 @@ func NewEvaluationContext(targetingKey string, attributes map[string]interface{}
 		attrs[key] = value
 	}
 
-	return EvaluationContext{
-		targetingKey: targetingKey,
-		attributes:   attrs,
-	}
+	return EvaluationContext{ctx: nil, targetingKey: targetingKey, attributes: attrs}
 }
